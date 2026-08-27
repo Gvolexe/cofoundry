@@ -153,7 +153,8 @@ describe('Finalize.ps1 ordering invariants', () => {
 
     test('defers sysprep and WinRM teardown until preparation has returned', () => {
         expect(finalize).toContain('param([switch]$Seal)')
-        expect(finalize).toContain('Copy-Item $PSCommandPath $sealScript -Force')
+        expect(finalize).toContain('$env:CF_CURRENT_SCRIPT_PATH')
+        expect(finalize).toContain('Copy-Item $sealSource $sealScript -Force')
         expect(finalize).toContain('PackerFinalizeSeal')
         expect(finalize).toContain('Register-ScheduledTask')
         expect(finalize).toContain('Start-Sleep -Seconds 10')
@@ -162,6 +163,7 @@ describe('Finalize.ps1 ordering invariants', () => {
         expect(startSeal).toContain('status=$(qm status')
         expect(startSeal).toContain('within 15m')
         for (const recipe of windowsRecipes) {
+            expect(recipe).toContain('$env:CF_CURRENT_SCRIPT_PATH=$_p')
             expect(recipe).toContain('provisioner "shell-local"')
             expect(recipe).toContain(
                 'script           = "${path.root}/_shared/windows/Start-Seal.sh"'

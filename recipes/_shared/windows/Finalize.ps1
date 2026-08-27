@@ -2,6 +2,7 @@ param([switch]$Seal)
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+$sealScript = "C:\Windows\Setup\cf-seal.ps1"
 
 function Write-Step($Message) { Write-Host "==> $Message" }
 
@@ -860,9 +861,13 @@ Write-Step "register deferred seal task"
 # a live Finalize provisioner can return. Copy this script to a stable path and
 # let a separate final provisioner start its -Seal phase after the preparation
 # phase has returned exit 0. The scheduled task has no trigger and runs as SYSTEM.
-$sealScript = "C:\Windows\Setup\cf-seal.ps1"
 New-Item -ItemType Directory -Force -Path (Split-Path $sealScript) | Out-Null
-Copy-Item $PSCommandPath $sealScript -Force
+$sealSource = if ($PSCommandPath) { $PSCommandPath } else { $env:CF_CURRENT_SCRIPT_PATH }
+if ([string]::IsNullOrWhiteSpace($sealSource) -or
+    -not (Test-Path -LiteralPath $sealSource -PathType Leaf)) {
+  throw "cannot locate the uploaded Finalize.ps1 source; refusing to register an empty deferred seal task"
+}
+Copy-Item $sealSource $sealScript -Force
 $sealAction = New-ScheduledTaskAction -Execute "powershell.exe" `
   -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$sealScript`" -Seal"
 $sealPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
@@ -1088,7 +1093,7 @@ $sentinel = "C:\Windows\Setup\cf-finalize-complete.tag"
 Write-Step "wrote completion sentinel $sentinel"
 
 Unregister-ScheduledTask -TaskName "PackerFinalizeSeal" -Confirm:$false -ErrorAction SilentlyContinue
-Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
+Remove-Item $sealScript -Force -ErrorAction SilentlyContinue
 Write-Step "generalize complete and armed; shutting down"
 shutdown.exe /s /t 0 /f
 Start-Sleep 180
