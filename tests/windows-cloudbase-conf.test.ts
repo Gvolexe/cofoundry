@@ -144,17 +144,19 @@ describe('Finalize.ps1 ordering invariants', () => {
     })
 
     test('writes the completion sentinel the export gate requires', () => {
-        expect(finalize).toContain('cf-finalize-complete.tag')
-        // Must come after sysprep, or it proves nothing about the teardown.
-        expect(finalize.indexOf('cf-finalize-complete.tag')).toBeGreaterThan(
-            sysprepAt
+        const sentinelAt = finalize.indexOf(
+            '$sentinel = "C:\\Windows\\Setup\\cf-finalize-complete.tag"'
         )
+        expect(sentinelAt).toBeGreaterThan(-1)
+        // Must come after sysprep, or it proves nothing about the teardown.
+        expect(sentinelAt).toBeGreaterThan(sysprepAt)
     })
 
     test('defers sysprep and WinRM teardown until preparation has returned', () => {
         expect(finalize).toContain('param([switch]$Seal)')
-        expect(finalize).toContain('$env:CF_CURRENT_SCRIPT_PATH')
-        expect(finalize).toContain('Copy-Item $sealSource $sealScript -Force')
+        expect(finalize).toContain("Test-Path -LiteralPath 'C:\\Windows\\Setup\\cf-seal.ps1'")
+        expect(finalize).toContain("[IO.File]::ReadAllText('C:\\Windows\\Setup\\cf-seal.ps1')")
+        expect(finalize).not.toContain('Copy-Item $sealSource')
         expect(finalize).toContain('PackerFinalizeSeal')
         expect(finalize).toContain('Register-ScheduledTask')
         expect(finalize).toContain('Start-Sleep -Seconds 10')
@@ -163,7 +165,13 @@ describe('Finalize.ps1 ordering invariants', () => {
         expect(startSeal).toContain('status=$(qm status')
         expect(startSeal).toContain('within 15m')
         for (const recipe of windowsRecipes) {
-            expect(recipe).toContain('$env:CF_CURRENT_SCRIPT_PATH=$_p')
+            expect(recipe).toContain('provisioner "file"')
+            expect(recipe).toContain(
+                'source      = "${path.root}/_shared/windows/Finalize.ps1"'
+            )
+            expect(recipe).toContain(
+                'destination = "C:/Windows/Setup/cf-seal.ps1"'
+            )
             expect(recipe).toContain('provisioner "shell-local"')
             expect(recipe).toContain(
                 'script           = "${path.root}/_shared/windows/Start-Seal.sh"'

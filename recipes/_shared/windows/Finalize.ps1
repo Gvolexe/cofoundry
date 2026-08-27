@@ -2,7 +2,6 @@ param([switch]$Seal)
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-$sealScript = "C:\Windows\Setup\cf-seal.ps1"
 
 function Write-Step($Message) { Write-Host "==> $Message" }
 
@@ -861,15 +860,21 @@ Write-Step "register deferred seal task"
 # a live Finalize provisioner can return. Copy this script to a stable path and
 # let a separate final provisioner start its -Seal phase after the preparation
 # phase has returned exit 0. The scheduled task has no trigger and runs as SYSTEM.
-New-Item -ItemType Directory -Force -Path (Split-Path $sealScript) | Out-Null
-$sealSource = if ($PSCommandPath) { $PSCommandPath } else { $env:CF_CURRENT_SCRIPT_PATH }
-if ([string]::IsNullOrWhiteSpace($sealSource) -or
-    -not (Test-Path -LiteralPath $sealSource -PathType Leaf)) {
-  throw "cannot locate the uploaded Finalize.ps1 source; refusing to register an empty deferred seal task"
+# Packer uploads the stable task payload with a dedicated file provisioner.
+# Do not make the running PowerShell provisioner copy itself: Packer executes it
+# through a generated wrapper where the automatic script-path variables are not
+# reliable, which produced a null Path after nearly an hour of successful work.
+if (-not (Test-Path -LiteralPath 'C:\Windows\Setup\cf-seal.ps1' -PathType Leaf)) {
+  throw "Packer did not upload C:\Windows\Setup\cf-seal.ps1; refusing to register the deferred seal task"
 }
-Copy-Item $sealSource $sealScript -Force
+$sealText = [IO.File]::ReadAllText('C:\Windows\Setup\cf-seal.ps1')
+foreach ($requiredMarker in @('param([switch]$Seal)', 'cf-finalize-complete.tag', 'rdp=enabled-nla')) {
+  if (-not $sealText.Contains($requiredMarker)) {
+    throw "stable deferred seal payload is incomplete (missing $requiredMarker)"
+  }
+}
 $sealAction = New-ScheduledTaskAction -Execute "powershell.exe" `
-  -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$sealScript`" -Seal"
+  -Argument '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\Windows\Setup\cf-seal.ps1" -Seal'
 $sealPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 Register-ScheduledTask -TaskName "PackerFinalizeSeal" -Action $sealAction `
   -Principal $sealPrincipal -Force | Out-Null
@@ -1093,7 +1098,7 @@ $sentinel = "C:\Windows\Setup\cf-finalize-complete.tag"
 Write-Step "wrote completion sentinel $sentinel"
 
 Unregister-ScheduledTask -TaskName "PackerFinalizeSeal" -Confirm:$false -ErrorAction SilentlyContinue
-Remove-Item $sealScript -Force -ErrorAction SilentlyContinue
+Remove-Item 'C:\Windows\Setup\cf-seal.ps1' -Force -ErrorAction SilentlyContinue
 Write-Step "generalize complete and armed; shutting down"
 shutdown.exe /s /t 0 /f
 Start-Sleep 180
