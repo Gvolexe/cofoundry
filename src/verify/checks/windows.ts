@@ -117,6 +117,36 @@ if ($bad) {
             timeoutS: 120,
         },
         {
+            // Windows Server defaults RDP to off. These templates are expected
+            // to be reachable with the injected Administrator password, while
+            // retaining NLA and the inbox firewall boundary.
+            id: 'rdp-enabled',
+            description:
+                'RDP is enabled, allowed by the inbox firewall rules, listening on 3389, and requires NLA',
+            script: `$ts = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
+Write-Output "fDenyTSConnections=$($ts.fDenyTSConnections)"
+if ($ts.fDenyTSConnections -ne 0) { exit 1 }
+$nla = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp').UserAuthentication
+Write-Output "NLA=$nla"
+if ($nla -ne 1) {
+  Write-Output 'NLA is off - the logon surface would be reachable pre-auth'
+  exit 1
+}
+$rules = @(Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -ErrorAction SilentlyContinue)
+$enabled = @($rules | Where-Object { $_.Enabled -eq 'True' -and $_.Direction -eq 'Inbound' -and $_.Action -eq 'Allow' })
+Write-Output "Remote Desktop firewall rules enabled=$($enabled.Count) total=$($rules.Count)"
+if (-not $rules.Count -or $enabled.Count -ne $rules.Count) {
+  Write-Output 'the inbox Remote Desktop firewall group is missing or not fully enabled'
+  exit 1
+}
+$listener = Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue
+if (-not $listener) { Write-Output 'no listener on 3389'; exit 1 }
+Write-Output 'RDP listening on 3389'`,
+            severity: 'fail',
+            phase: 'first-boot',
+            timeoutS: 120,
+        },
+        {
             // These templates publish to a public CDN, so a build password left
             // in an answer file ships to everyone. When verify recovered the
             // build password from the node it greps for that exact value;

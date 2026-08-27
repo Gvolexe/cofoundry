@@ -86,6 +86,26 @@ describe('cloudbase-init specialize-pass config', () => {
 describe('Finalize.ps1 ordering invariants', () => {
     const sysprepAt = finalize.indexOf('Write-Step "sysprep and shutdown"')
 
+    test('enables secure RDP only after generalize', () => {
+        const teardownAt = finalize.indexOf(
+            'Write-Step "tear down the build\'s WinRM exposure"'
+        )
+        expect(sysprepAt).toBeGreaterThan(-1)
+        expect(teardownAt).toBeGreaterThan(sysprepAt)
+
+        const shippedPolicy = finalize.slice(sysprepAt, teardownAt)
+        expect(shippedPolicy).toMatch(
+            /fDenyTSConnections[^\n]*-Value 0[^\n]*-Type DWord/
+        )
+        expect(shippedPolicy).toMatch(
+            /UserAuthentication[^\n]*-Value 1[^\n]*-Type DWord/
+        )
+        expect(shippedPolicy).toContain('@FirewallAPI.dll,-28752')
+        expect(shippedPolicy).toContain(
+            'no Remote Desktop firewall rules could be enabled'
+        )
+    })
+
     test('nothing that can sever WinRM runs before sysprep', () => {
         expect(sysprepAt).toBeGreaterThan(-1)
         const beforeSysprep = finalize.slice(0, sysprepAt)

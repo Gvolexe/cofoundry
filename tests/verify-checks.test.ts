@@ -191,6 +191,20 @@ describe('linux checks', () => {
 })
 
 describe('windows checks', () => {
+    test('RDP is a fail-severity first-boot contract', () => {
+        const check = windowsSuite.checks.find(c => c.id === 'rdp-enabled')
+
+        expect(check).toBeDefined()
+        expect(check!.severity).toBe('fail')
+        expect(check!.phase).toBe('first-boot')
+
+        const script = renderScript(check!, ctx)
+        expect(script).toContain('fDenyTSConnections')
+        expect(script).toContain('UserAuthentication')
+        expect(script).toContain('@FirewallAPI.dll,-28752')
+        expect(script).toContain('Get-NetTCPConnection -LocalPort 3389')
+    })
+
     test('the gray-desktop regressions each have a dedicated check', () => {
         const ids = windowsSuite.checks.map(c => c.id)
         expect(ids).toContain('generalization-state')

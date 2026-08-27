@@ -347,6 +347,31 @@ set` calls and the firewall rules now all sit together after generalize. The
 rule is simple: **nothing above sysprep may touch WinRM auth, its policy keys,
 or its firewall rules.**
 
+### Shipped templates enable RDP (2026-08-27)
+
+Windows Server ships with RDP disabled. A fresh production-template clone on
+2026-08-27 confirmed the complete failure shape: `fDenyTSConnections=1`, all
+three inbox Remote Desktop firewall rules disabled, and no listener on TCP
+3389. The same untouched clone proved that ConfigDrive and Cloudbase-Init were
+otherwise working: the requested IPv4 address and `/27` prefix, DNS servers,
+hostname, and Administrator password were applied before Cloudbase-Init logged
+`Plugins execution done`.
+
+`Finalize.ps1` now enables Terminal Services after generalize, explicitly keeps
+NLA required, and enables the inbox Remote Desktop firewall group by its
+locale-independent resource id (`@FirewallAPI.dll,-28752`). Keeping the change
+in the post-generalize shipped-policy block avoids touching the live WinRM
+session used by Packer. The `rdp-enabled` verifier fails unless the registry
+policy, NLA policy, every inbox firewall rule, and the TCP 3389 listener all
+agree.
+
+The clean reproduction used an isolated documentation-range address
+(`192.0.2.44/27`) and a disposable clone of the deployed Server 2022 template.
+Proxmox's network payload specified `255.255.255.224`; the untouched guest
+reported the same address with prefix length 27 and both requested DNS servers.
+This falsified an IPv4 parsing defect in the image. The customer VM was excluded
+from acceptance because its network and RDP settings had been edited manually.
+
 ### windows-server-2022 VERIFIED end to end (2026-08-03)
 
 `cf verify windows-server-2022` passed on the `124401b` artifact: **15 checks

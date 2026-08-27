@@ -1000,6 +1000,29 @@ foreach ($t in @("Reboot", "Reboot_AC", "Reboot_Battery")) {
 # disk entirely; the specialize-script deletion stays as a backstop.
 Remove-Item $unattendCopy -Force -ErrorAction SilentlyContinue
 
+Write-Step "enable Remote Desktop on the shipped template"
+# Convoy provisions the clone with an Administrator password and expects RDP to
+# be its first remote-access path. Windows Server ships with RDP denied and the
+# inbox firewall group disabled, so leaving the defaults unchanged produces a
+# healthy clone that is unreachable on 3389.
+#
+# This policy belongs after generalize: writes after /quit land in the sealed
+# image, and the Remote Desktop firewall group is separate from the build-only
+# WinRM rules torn down below. Match the firewall group by its resource id so
+# this works on non-English media too. NLA is set explicitly rather than relying
+# on an edition default because these clones can land directly on public networks.
+$terminalServerKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server"
+$rdpTcpKey = "$terminalServerKey\WinStations\RDP-Tcp"
+Set-ItemProperty $terminalServerKey -Name fDenyTSConnections -Value 0 -Type DWord
+Set-ItemProperty $rdpTcpKey -Name UserAuthentication -Value 1 -Type DWord
+Enable-NetFirewallRule -Group "@FirewallAPI.dll,-28752" -ErrorAction SilentlyContinue
+$rdpRules = @(Get-NetFirewallRule -Group "@FirewallAPI.dll,-28752" -ErrorAction SilentlyContinue |
+  Where-Object { $_.Enabled -eq "True" -and $_.Direction -eq "Inbound" -and $_.Action -eq "Allow" })
+Write-Step "  $($rdpRules.Count) Remote Desktop firewall rule(s) enabled"
+if (-not $rdpRules.Count) {
+  throw "no Remote Desktop firewall rules could be enabled - every clone would ship unreachable over RDP"
+}
+
 Write-Step "tear down the build's WinRM exposure"
 # EVERYTHING that can cut packer's WinRM session MUST stay here, after generalize
 # and immediately before the shutdown. Nothing above this point may touch WinRM
