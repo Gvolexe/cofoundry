@@ -209,11 +209,6 @@ source "proxmox-iso" "windows-server-2019" {
   winrm_timeout = "45m"
   winrm_port    = 5985
 
-  # Finalize registers this task after sysprep. Starting it as the builder's
-  # shutdown command lets the provisioner return before the task disables the
-  # Basic/unencrypted WinRM transport packer is using.
-  shutdown_command = "powershell -NoLogo -NoProfile -NonInteractive -Command \"Start-ScheduledTask -TaskName 'PackerFinalizeShutdown'\""
-  shutdown_timeout = "15m"
 }
 
 build {
@@ -285,6 +280,16 @@ build {
       "CF_ADMIN_PASSWORD=${var.winrm_password}",
     ]
     script = "${path.root}/_shared/windows/Finalize.ps1"
+  }
+
+  # The Proxmox builder has no shutdown_command. Start the deferred task only
+  # after Finalize has returned 0, then keep packer idle while the task removes
+  # WinRM exposure, writes the sentinel, and powers off. If it fails, the
+  # missing sentinel makes the post-processor reject the image.
+  provisioner "powershell" {
+    execute_command = local.ps_execute
+    inline          = ["Start-ScheduledTask -TaskName 'PackerFinalizeShutdown'"]
+    pause_after     = "45s"
   }
 
   post-processor "shell-local" {

@@ -333,9 +333,10 @@ Server 2019 build completed updates, cleanup, disk shrink, and sysprep, then
 failed with `http response error: 401 - invalid content type` as soon as Finalize
 disabled Basic/unencrypted WinRM. Although no guest work remained, packer now
 required the provisioner's final HTTP response before accepting the shutdown.
-The teardown therefore runs in the `PackerFinalizeShutdown` SYSTEM task, which
-packer starts through the builder's `shutdown_command` only after Finalize has
-returned exit 0. The task removes the build-only WinRM exposure, writes the
+The Proxmox builder does not support `shutdown_command`, so the teardown runs in
+the `PackerFinalizeShutdown` SYSTEM task. A final PowerShell provisioner starts
+that task only after Finalize has returned exit 0, then its `pause_after` keeps
+packer idle while the task removes the build-only WinRM exposure, writes the
 completion sentinel, and powers off. If it fails, the sentinel stays absent and
 the export gate rejects the image.
 
@@ -356,8 +357,8 @@ Packer connects with Basic auth over unencrypted HTTP, so
 rule removal did. The keepalive task, the policy-key removal, the two `winrm
 set` calls and the firewall rules now all sit together after generalize. The
 rule is simple: **nothing in a live provisioner may touch WinRM auth, its policy
-keys, or its firewall rules.** Start that work only through the builder's
-shutdown command after every provisioner has returned.
+keys, or its firewall rules.** Start that work only from a separate final
+provisioner after the main Finalize script has returned.
 
 ### Shipped templates enable RDP (2026-08-27)
 

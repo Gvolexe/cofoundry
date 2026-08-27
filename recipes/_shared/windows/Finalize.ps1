@@ -1025,7 +1025,7 @@ if (-not $rdpRules.Count) {
 
 Write-Step "register deferred teardown of the build's WinRM exposure"
 # EVERYTHING that can cut packer's WinRM session runs in a SYSTEM scheduled task
-# started by packer's shutdown_command, after this provisioner has returned a
+# started by a separate final provisioner, after this provisioner has returned a
 # successful exit status. Doing the teardown in this live provisioner produces
 # an HTTP 401 with packer 1.16.0: Basic/AllowUnencrypted disappear before packer
 # can receive the script's final response, so a completed image is marked failed.

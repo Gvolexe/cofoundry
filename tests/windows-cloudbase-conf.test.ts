@@ -143,18 +143,16 @@ describe('Finalize.ps1 ordering invariants', () => {
         )
     })
 
-    test('defers WinRM teardown to the builder shutdown command', () => {
+    test('defers WinRM teardown until Finalize has returned successfully', () => {
         expect(finalize).toContain('PackerFinalizeShutdown')
         expect(finalize).toContain('Register-ScheduledTask')
         expect(finalize).toContain('Start-Sleep -Seconds 10')
         for (const recipe of windowsRecipes) {
             expect(recipe).toContain(
-                'shutdown_command = "powershell -NoLogo -NoProfile -NonInteractive -Command'
+                'inline          = ["Start-ScheduledTask -TaskName \'PackerFinalizeShutdown\'"]'
             )
-            expect(recipe).toContain(
-                "Start-ScheduledTask -TaskName 'PackerFinalizeShutdown'"
-            )
-            expect(recipe).toContain('shutdown_timeout = "15m"')
+            expect(recipe).toContain('pause_after     = "45s"')
+            expect(recipe).not.toMatch(/^\s*shutdown_command\s*=/m)
         }
     })
 
