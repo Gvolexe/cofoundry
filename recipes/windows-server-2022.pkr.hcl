@@ -213,6 +213,12 @@ source "proxmox-iso" "windows-server-2022" {
   # cf retries the build (CF_BUILD_ATTEMPTS) to ride out intermittent flakes.
   winrm_timeout = "45m"
   winrm_port    = 5985
+
+  # Finalize registers this task after sysprep. Starting it as the builder's
+  # shutdown command lets the provisioner return before the task disables the
+  # Basic/unencrypted WinRM transport packer is using.
+  shutdown_command = "powershell -NoLogo -NoProfile -NonInteractive -Command \"Start-ScheduledTask -TaskName 'PackerFinalizeShutdown'\""
+  shutdown_timeout = "15m"
 }
 
 build {

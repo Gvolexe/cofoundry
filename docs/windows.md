@@ -323,10 +323,21 @@ exposure` and the next line is packer's `Stopping VM`, with the Appx and sysprep
 steps between them never appearing — identical across the 07-31 run and the
 08-01 13:26Z run.
 
-Fix: the **entire** WinRM teardown moved to immediately before the final
-shutdown, after generalize. Sysprep uses `/quit`, so the machine is still up and registry writes
-land in the sealed image (the WU policy restore already relies on this). Losing
-the session there costs nothing, since the only remaining action is power-off.
+Initial fix: the **entire** WinRM teardown moved to immediately before the final
+shutdown, after generalize. Sysprep uses `/quit`, so the machine is still up and
+registry writes land in the sealed image (the WU policy restore already relies
+on this).
+
+**Packer 1.16.0 made the post-generalize disconnect loud (2026-08-27).** A full
+Server 2019 build completed updates, cleanup, disk shrink, and sysprep, then
+failed with `http response error: 401 - invalid content type` as soon as Finalize
+disabled Basic/unencrypted WinRM. Although no guest work remained, packer now
+required the provisioner's final HTTP response before accepting the shutdown.
+The teardown therefore runs in the `PackerFinalizeShutdown` SYSTEM task, which
+packer starts through the builder's `shutdown_command` only after Finalize has
+returned exit 0. The task removes the build-only WinRM exposure, writes the
+completion sentinel, and powers off. If it fails, the sentinel stays absent and
+the export gate rejects the image.
 
 **Keep this ordering.** Anything that can sever WinRM must run after sysprep, or
 it will silently truncate the script and re-introduce a shipped broken template.
@@ -344,8 +355,9 @@ Packer connects with Basic auth over unencrypted HTTP, so
 `winrm set .../auth @{Basic="false"}` cuts its session exactly as the firewall
 rule removal did. The keepalive task, the policy-key removal, the two `winrm
 set` calls and the firewall rules now all sit together after generalize. The
-rule is simple: **nothing above sysprep may touch WinRM auth, its policy keys,
-or its firewall rules.**
+rule is simple: **nothing in a live provisioner may touch WinRM auth, its policy
+keys, or its firewall rules.** Start that work only through the builder's
+shutdown command after every provisioner has returned.
 
 ### Shipped templates enable RDP (2026-08-27)
 
@@ -425,10 +437,10 @@ and packer reads the disconnect as success. Truncation *before* sysprep is caugh
 by the export gate (the image is not generalized). Truncation *after* it was
 invisible — the image generalizes fine and merely ships with the build's WinRM
 exposure intact. `Finalize.ps1` now writes
-`C:\Windows\Setup\cf-finalize-complete.tag` as its last act, after the
-teardown, and `assert-generalized.sh` refuses the export if it is missing. Any
-future step that kills the session, anywhere in that script, is now a loud gate
-failure. Do not move the sentinel earlier.
+`C:\Windows\Setup\cf-finalize-complete.tag` from the deferred shutdown task as
+its last act after teardown, and `assert-generalized.sh` refuses the export if it
+is missing. Any future teardown failure is therefore a loud gate failure. Do not
+move the sentinel earlier or back into the live provisioner.
 
 ### Clones loop on "The computer restarted unexpectedly" (allow_reboot)
 

@@ -24,6 +24,18 @@ const finalize = readFileSync(
     'utf8'
 )
 
+const windowsRecipes = [2019, 2022, 2025].map(year =>
+    readFileSync(
+        fileURLToPath(
+            new URL(
+                `../recipes/windows-server-${year}.pkr.hcl`,
+                import.meta.url
+            )
+        ),
+        'utf8'
+    )
+)
+
 /**
  * The specialize-pass config — the one the RunSynchronous command runs with.
  *
@@ -88,7 +100,7 @@ describe('Finalize.ps1 ordering invariants', () => {
 
     test('enables secure RDP only after generalize', () => {
         const teardownAt = finalize.indexOf(
-            'Write-Step "tear down the build\'s WinRM exposure"'
+            'Write-Step "register deferred teardown of the build\'s WinRM exposure"'
         )
         expect(sysprepAt).toBeGreaterThan(-1)
         expect(teardownAt).toBeGreaterThan(sysprepAt)
@@ -129,6 +141,21 @@ describe('Finalize.ps1 ordering invariants', () => {
         expect(finalize.indexOf('cf-finalize-complete.tag')).toBeGreaterThan(
             sysprepAt
         )
+    })
+
+    test('defers WinRM teardown to the builder shutdown command', () => {
+        expect(finalize).toContain('PackerFinalizeShutdown')
+        expect(finalize).toContain('Register-ScheduledTask')
+        expect(finalize).toContain('Start-Sleep -Seconds 10')
+        for (const recipe of windowsRecipes) {
+            expect(recipe).toContain(
+                'shutdown_command = "powershell -NoLogo -NoProfile -NonInteractive -Command'
+            )
+            expect(recipe).toContain(
+                "Start-ScheduledTask -TaskName 'PackerFinalizeShutdown'"
+            )
+            expect(recipe).toContain('shutdown_timeout = "15m"')
+        }
     })
 
     test('dumps sysprep diagnostics on a failed generalize attempt', () => {

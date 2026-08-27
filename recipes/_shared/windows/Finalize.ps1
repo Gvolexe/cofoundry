@@ -1023,10 +1023,14 @@ if (-not $rdpRules.Count) {
   throw "no Remote Desktop firewall rules could be enabled - every clone would ship unreachable over RDP"
 }
 
-Write-Step "tear down the build's WinRM exposure"
-# EVERYTHING that can cut packer's WinRM session MUST stay here, after generalize
-# and immediately before the shutdown. Nothing above this point may touch WinRM
-# auth, its policy keys, or its firewall rules.
+Write-Step "register deferred teardown of the build's WinRM exposure"
+# EVERYTHING that can cut packer's WinRM session runs in a SYSTEM scheduled task
+# started by packer's shutdown_command, after this provisioner has returned a
+# successful exit status. Doing the teardown in this live provisioner produces
+# an HTTP 401 with packer 1.16.0: Basic/AllowUnencrypted disappear before packer
+# can receive the script's final response, so a completed image is marked failed.
+# Nothing above this point may touch WinRM auth, its policy keys, or its firewall
+# rules.
 #
 # This bit the build twice on 2026-08-01, the second time because only half the
 # teardown was moved:
@@ -1042,39 +1046,61 @@ Write-Step "tear down the build's WinRM exposure"
 # code went nowhere, and packer read the disconnect as provisioner success and
 # exported a never-generalized template. That is the 2026-07-31 silent export.
 #
-# Running it here is safe: sysprep used /quit, so the machine is still up, and
-# registry writes after generalize land in the sealed image (same reason the WU
-# policy restore above sits here). Losing the session now costs nothing, because
-# the only remaining action is the power-off.
-Unregister-ScheduledTask -TaskName "PackerWinRMKeepalive" -Confirm:$false -ErrorAction SilentlyContinue
-Remove-Item "C:\Windows\System32\packer-winrm-keepalive.ps1" -Force -ErrorAction SilentlyContinue
-# Remove the Group Policy registry keys that pinned Basic auth / AllowUnencrypted
-# during the build so the sysprep'd template ships with WinRM in its secure default state.
-Remove-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service" -Force -ErrorAction SilentlyContinue
-# Must go through cmd.exe: from PowerShell the @{...} argument is parsed as a
-# hashtable and winrm.cmd receives "System.Collections.Hashtable".
-# Best-effort - the authoritative unpin is the policy-key removal.
-cmd.exe /c 'winrm set winrm/config/service @{AllowUnencrypted="false"} >nul 2>&1'
-cmd.exe /c 'winrm set winrm/config/service/auth @{Basic="false"} >nul 2>&1'
-#
-# WinRM itself is deliberately left running: on Windows Server (unlike client
-# SKUs) the service, the HTTP listener on 5985, and the Domain/Private firewall
-# rules are all enabled out of the box, so disabling them would ship a template
-# that deviates from stock Server behavior.
-#
-# What the build adds on top of that is removed here:
-#   - "WinRM-HTTP", created by autounattend.xml's netsh command, applies to every
-#     profile including Public.
-#   - the stock "Windows Remote Management (HTTP-In)" rule bound to the Public
-#     profile, which winrm quickconfig enables and which is not on by default.
-# Both leave the management port reachable on untrusted networks on every clone.
-Remove-NetFirewallRule -Name "WinRM-HTTP" -ErrorAction SilentlyContinue
-Remove-NetFirewallRule -DisplayName "WinRM-HTTP" -ErrorAction SilentlyContinue
-Get-NetFirewallRule -DisplayName "Windows Remote Management (HTTP-In)" -ErrorAction SilentlyContinue |
-  Where-Object { $_.Profile -match "Public" } |
-  Disable-NetFirewallRule -ErrorAction SilentlyContinue
+# The scheduled task performs the teardown, writes the export-gate sentinel, and
+# powers the machine off. It has no trigger: packer starts it only after all
+# provisioners have returned successfully.
+$shutdownScript = "C:\Windows\Setup\cf-finalize-shutdown.ps1"
+New-Item -ItemType Directory -Force -Path (Split-Path $shutdownScript) | Out-Null
+@'
+$ErrorActionPreference = "Stop"
+$sentinel = "C:\Windows\Setup\cf-finalize-complete.tag"
+$errorLog = "C:\Windows\Setup\cf-finalize-shutdown-error.log"
+try {
+  # Give Start-ScheduledTask's WinRM request time to return 200 before changing
+  # the authentication policy underneath that request.
+  Start-Sleep -Seconds 10
+  Unregister-ScheduledTask -TaskName "PackerWinRMKeepalive" -Confirm:$false -ErrorAction SilentlyContinue
+  Remove-Item "C:\Windows\System32\packer-winrm-keepalive.ps1" -Force -ErrorAction SilentlyContinue
 
-# Completion sentinel. THIS MUST BE THE LAST THING WRITTEN before the power-off.
+  # Remove the Group Policy keys that pinned Basic auth and unencrypted transport
+  # for the build. The winrm commands are best-effort; deleting the policy is the
+  # authoritative change. cmd.exe avoids PowerShell parsing @{...} as a hashtable.
+  Remove-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service" -Force -ErrorAction SilentlyContinue
+  cmd.exe /c 'winrm set winrm/config/service @{AllowUnencrypted="false"} >nul 2>&1'
+  cmd.exe /c 'winrm set winrm/config/service/auth @{Basic="false"} >nul 2>&1'
+
+  # Keep stock Server WinRM behavior, but remove the build-only Public exposure.
+  Remove-NetFirewallRule -Name "WinRM-HTTP" -ErrorAction SilentlyContinue
+  Remove-NetFirewallRule -DisplayName "WinRM-HTTP" -ErrorAction SilentlyContinue
+  Get-NetFirewallRule -DisplayName "Windows Remote Management (HTTP-In)" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Profile -match "Public" } |
+    Disable-NetFirewallRule -ErrorAction SilentlyContinue
+
+  @(
+      "finalized=$([DateTime]::UtcNow.ToString('o'))"
+      "winrm_teardown=done"
+      "generalize=armed"
+  ) -join "`r`n" | Set-Content -Path $sentinel -Encoding ASCII
+} catch {
+  ($_ | Out-String) | Set-Content -Path $errorLog -Encoding UTF8
+} finally {
+  Unregister-ScheduledTask -TaskName "PackerFinalizeShutdown" -Confirm:$false -ErrorAction SilentlyContinue
+  Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
+  shutdown.exe /s /t 0 /f
+}
+'@ | Set-Content -Path $shutdownScript -Encoding UTF8
+
+$shutdownAction = New-ScheduledTaskAction -Execute "powershell.exe" `
+  -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$shutdownScript`""
+$shutdownPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+Register-ScheduledTask -TaskName "PackerFinalizeShutdown" -Action $shutdownAction `
+  -Principal $shutdownPrincipal -Force | Out-Null
+if (-not (Get-ScheduledTask -TaskName "PackerFinalizeShutdown" -ErrorAction SilentlyContinue)) {
+  throw "failed to register PackerFinalizeShutdown; refusing to leave WinRM exposed in the template"
+}
+
+# Completion sentinel. THIS MUST BE THE LAST THING WRITTEN by the shutdown task
+# before the power-off.
 #
 # Finalize has silently truncated twice (2026-08-01/02): once when the firewall
 # teardown ran before sysprep, once when the Basic/AllowUnencrypted unpin did.
@@ -1084,23 +1110,7 @@ Get-NetFirewallRule -DisplayName "Windows Remote Management (HTTP-In)" -ErrorAct
 # generalized), but truncation *after* it is invisible: the image generalizes
 # fine and merely ships with the build's WinRM exposure still in place.
 #
-# The sentinel closes that hole generically -- any future step that kills the
-# session, anywhere in this script, means this file never lands and
-# assert-generalized refuses the export. Do not move it earlier.
-$sentinel = "C:\Windows\Setup\cf-finalize-complete.tag"
-New-Item -ItemType Directory -Force -Path (Split-Path $sentinel) | Out-Null
-@(
-    "finalized=$([DateTime]::UtcNow.ToString('o'))"
-    "winrm_teardown=done"
-    "generalize=armed"
-) -join "`r`n" | Set-Content -Path $sentinel -Encoding ASCII
-Write-Step "wrote completion sentinel $sentinel"
-
-# Generalize is done but /quit left the machine running. Power it off so the
-# node-side vzdump captures the sealed image -- the same end state sysprep
-# /shutdown produced; packer sees a normal shutdown-disconnect here.
-Write-Step "generalize complete and armed; shutting down"
-& shutdown.exe /s /t 0 /f
-# Give the OS time to power off; nothing after this needs to run.
-Start-Sleep 180
+# The sentinel closes that hole generically: failed teardown means no sentinel,
+# and assert-generalized refuses the export. Do not move it earlier.
+Write-Step "generalize complete and armed; deferred shutdown task ready"
 exit 0
