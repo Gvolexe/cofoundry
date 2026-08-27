@@ -287,14 +287,12 @@ build {
     script = "${path.root}/_shared/windows/Finalize.ps1"
   }
 
-  # The Proxmox builder has no shutdown_command. Start the deferred task only
-  # after Finalize has returned 0, then keep packer idle while the task removes
-  # WinRM exposure, writes the sentinel, and powers off. If it fails, the
-  # missing sentinel makes the post-processor reject the image.
-  provisioner "powershell" {
-    execute_command = local.ps_execute
-    inline          = ["Start-ScheduledTask -TaskName 'PackerFinalizeShutdown'"]
-    pause_after     = "45s"
+  # Start the detached seal through QEMU guest exec, not WinRM: sysprep itself
+  # resets the live WinRM session. The host-side script waits for real poweroff;
+  # the post-processor then checks the offline completion sentinel.
+  provisioner "shell-local" {
+    environment_vars = ["CF_BUILT_VMID=${local.build_vmid}"]
+    script           = "${path.root}/_shared/windows/Start-Seal.sh"
   }
 
   post-processor "shell-local" {

@@ -23,6 +23,12 @@ const finalize = readFileSync(
     ),
     'utf8'
 )
+const startSeal = readFileSync(
+    fileURLToPath(
+        new URL('../recipes/_shared/windows/Start-Seal.sh', import.meta.url)
+    ),
+    'utf8'
+)
 
 const windowsRecipes = [2019, 2022, 2025].map(year =>
     readFileSync(
@@ -96,11 +102,13 @@ describe('cloudbase-init specialize-pass config', () => {
 })
 
 describe('Finalize.ps1 ordering invariants', () => {
-    const sysprepAt = finalize.indexOf('Write-Step "sysprep and shutdown"')
+    const sysprepAt = finalize.indexOf(
+        'Write-Step "sysprep generalize (attempt $attempt/$maxAttempts)"'
+    )
 
     test('enables secure RDP only after generalize', () => {
         const teardownAt = finalize.indexOf(
-            'Write-Step "register deferred teardown of the build\'s WinRM exposure"'
+            'Write-Step "tear down the build\'s WinRM exposure"'
         )
         expect(sysprepAt).toBeGreaterThan(-1)
         expect(teardownAt).toBeGreaterThan(sysprepAt)
@@ -143,15 +151,24 @@ describe('Finalize.ps1 ordering invariants', () => {
         )
     })
 
-    test('defers WinRM teardown until Finalize has returned successfully', () => {
-        expect(finalize).toContain('PackerFinalizeShutdown')
+    test('defers sysprep and WinRM teardown until preparation has returned', () => {
+        expect(finalize).toContain('param([switch]$Seal)')
+        expect(finalize).toContain('Copy-Item $PSCommandPath $sealScript -Force')
+        expect(finalize).toContain('PackerFinalizeSeal')
         expect(finalize).toContain('Register-ScheduledTask')
         expect(finalize).toContain('Start-Sleep -Seconds 10')
+        expect(finalize.indexOf('if (-not $Seal)')).toBeLessThan(sysprepAt)
+        expect(startSeal).toContain('qm guest exec "$CF_BUILT_VMID"')
+        expect(startSeal).toContain('status=$(qm status')
+        expect(startSeal).toContain('within 15m')
         for (const recipe of windowsRecipes) {
+            expect(recipe).toContain('provisioner "shell-local"')
             expect(recipe).toContain(
-                'inline          = ["Start-ScheduledTask -TaskName \'PackerFinalizeShutdown\'"]'
+                'script           = "${path.root}/_shared/windows/Start-Seal.sh"'
             )
-            expect(recipe).toContain('pause_after     = "45s"')
+            expect(recipe).toContain(
+                'environment_vars = ["CF_BUILT_VMID=${local.build_vmid}"]'
+            )
             expect(recipe).not.toMatch(/^\s*shutdown_command\s*=/m)
         }
     })

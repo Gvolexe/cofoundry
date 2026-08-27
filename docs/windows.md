@@ -328,20 +328,21 @@ shutdown, after generalize. Sysprep uses `/quit`, so the machine is still up and
 registry writes land in the sealed image (the WU policy restore already relies
 on this).
 
-**Packer 1.16.0 made the post-generalize disconnect loud (2026-08-27).** A full
-Server 2019 build completed updates, cleanup, disk shrink, and sysprep, then
-failed with `http response error: 401 - invalid content type` as soon as Finalize
-disabled Basic/unencrypted WinRM. Although no guest work remained, packer now
-required the provisioner's final HTTP response before accepting the shutdown.
-The Proxmox builder does not support `shutdown_command`, so the teardown runs in
-the `PackerFinalizeShutdown` SYSTEM task. A final PowerShell provisioner starts
-that task only after Finalize has returned exit 0, then its `pause_after` keeps
-packer idle while the task removes the build-only WinRM exposure, writes the
-completion sentinel, and powers off. If it fails, the sentinel stays absent and
-the export gate rejects the image.
+**Packer 1.16.0 made the post-generalize disconnect loud (2026-08-27).** Two full
+Server 2019 builds completed updates, cleanup, and disk shrink, then failed with
+`http response error: 401 - invalid content type` immediately after sysprep. The
+second build had not reached either RDP configuration or WinRM teardown, proving
+that sysprep itself reset the active communicator. The Proxmox builder does not
+support `shutdown_command`, so Finalize now has preparation and seal phases. The
+preparation phase copies itself and registers a triggerless
+`PackerFinalizeSeal` SYSTEM task, then returns exit 0. A host-side Packer
+provisioner starts that task through the QEMU guest agent and waits for actual
+poweroff. The detached seal phase runs sysprep, validates RDP, removes build-only
+WinRM exposure, writes the completion sentinel, and powers off. If any step
+fails, the sentinel stays absent and the offline export gate rejects the image.
 
-**Keep this ordering.** Anything that can sever WinRM must run after sysprep, or
-it will silently truncate the script and re-introduce a shipped broken template.
+**Keep this split.** Sysprep and anything that can sever WinRM must run only in
+the detached seal task, after the preparation provisioner has returned.
 
 **Moving only part of it is not enough (2026-08-01 21:45Z).** With the firewall
 rules moved, Finalize reached the Appx step for the first time — and truncated
@@ -356,9 +357,9 @@ Packer connects with Basic auth over unencrypted HTTP, so
 `winrm set .../auth @{Basic="false"}` cuts its session exactly as the firewall
 rule removal did. The keepalive task, the policy-key removal, the two `winrm
 set` calls and the firewall rules now all sit together after generalize. The
-rule is simple: **nothing in a live provisioner may touch WinRM auth, its policy
-keys, or its firewall rules.** Start that work only from a separate final
-provisioner after the main Finalize script has returned.
+rule is simple: **nothing in a live provisioner may run sysprep or touch WinRM
+auth, its policy keys, or its firewall rules.** Start the detached seal through
+QEMU guest exec only after the main preparation phase has returned.
 
 ### Shipped templates enable RDP (2026-08-27)
 
@@ -438,10 +439,11 @@ and packer reads the disconnect as success. Truncation *before* sysprep is caugh
 by the export gate (the image is not generalized). Truncation *after* it was
 invisible — the image generalizes fine and merely ships with the build's WinRM
 exposure intact. `Finalize.ps1` now writes
-`C:\Windows\Setup\cf-finalize-complete.tag` from the deferred shutdown task as
-its last act after teardown, and `assert-generalized.sh` refuses the export if it
-is missing. Any future teardown failure is therefore a loud gate failure. Do not
-move the sentinel earlier or back into the live provisioner.
+`C:\Windows\Setup\cf-finalize-complete.tag` from the detached seal task as its
+last state claim after sysprep, RDP validation, and teardown;
+`assert-generalized.sh` refuses the export if it is missing. Any future seal
+failure is therefore loud. Do not move the sentinel earlier or put sysprep back
+into the live WinRM provisioner.
 
 ### Clones loop on "The computer restarted unexpectedly" (allow_reboot)
 
