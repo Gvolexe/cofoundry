@@ -183,6 +183,25 @@ describe('Finalize.ps1 ordering invariants', () => {
         }
     })
 
+    test('does not make packer cleanup wait for an env-vars file it never uploads', () => {
+        // Packer runs its generated `packer-cleanup-*` script through the same
+        // execute_command as a normal provisioner, but that cleanup invocation
+        // has no vars file. Requiring {{.Vars}} there added a proven five-minute
+        // timeout after Finalize had already completed successfully.
+        for (const recipe of windowsRecipes) {
+            expect(recipe).toContain(
+                "$_isCleanup=[IO.Path]::GetFileName($_p) -like 'packer-cleanup-*'"
+            )
+            expect(recipe).toContain('$_needsVars=-not $_isCleanup')
+            expect(recipe).toContain(
+                '($_needsVars -and -not (Test-Path $_v))'
+            )
+            expect(recipe).toContain(
+                'if ($_needsVars -and -not (Test-Path $_v))'
+            )
+        }
+    })
+
     test('dumps sysprep diagnostics on a failed generalize attempt', () => {
         // 2026-08-03: two consecutive 3h04m windows-server-2025 attempts failed
         // to arm, and the error told the reader to check setuperr.log on a VM
