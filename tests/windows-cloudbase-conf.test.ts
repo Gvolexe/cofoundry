@@ -212,6 +212,10 @@ describe('Finalize.ps1 ordering invariants', () => {
         )
         expect(finalize).toContain('Start-Service -Name "QEMU-GA"')
         expect(finalize).toContain(
+            'QEMU-GA already running with virtio-serial channel open'
+        )
+        expect(finalize).not.toContain('Restart-Service -Name "QEMU-GA" -Force')
+        expect(finalize).toContain(
             'Find-FileOnMedia "virtio-win-guest-tools.exe"'
         )
         expect(finalize).toContain(

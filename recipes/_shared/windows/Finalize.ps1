@@ -37,14 +37,16 @@ function Ensure-QemuGuestAgent {
   $svc = Get-Service -Name "QEMU-GA" -ErrorAction SilentlyContinue
   if ($svc) {
     Set-Service -Name "QEMU-GA" -StartupType Automatic
-    try {
-      if ($svc.Status -eq "Running") {
-        Restart-Service -Name "QEMU-GA" -Force -ErrorAction Stop
-      } else {
+    if (& $ready) {
+      Write-Step "  QEMU-GA already running with virtio-serial channel open"
+      return
+    }
+    if ($svc.Status -ne "Running") {
+      try {
         Start-Service -Name "QEMU-GA" -ErrorAction Stop
+      } catch {
+        Write-Step "  existing QEMU-GA could not be started; repairing VirtIO tools"
       }
-    } catch {
-      Write-Step "  existing QEMU-GA could not be restarted; repairing VirtIO tools"
     }
   }
 
