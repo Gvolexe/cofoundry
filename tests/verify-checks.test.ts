@@ -201,6 +201,12 @@ describe('windows checks', () => {
         const script = renderScript(check!, ctx)
         expect(script).toContain('fDenyTSConnections')
         expect(script).toContain('UserAuthentication')
+        expect(script).toContain(
+            String.raw`HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server`
+        )
+        expect(script).toContain(
+            String.raw`HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp`
+        )
         expect(script).toContain('@FirewallAPI.dll,-28752')
         expect(script).toContain('Get-NetTCPConnection -LocalPort 3389')
     })
