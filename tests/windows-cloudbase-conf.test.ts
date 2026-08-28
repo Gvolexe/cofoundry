@@ -23,6 +23,12 @@ const finalize = readFileSync(
     ),
     'utf8'
 )
+const install = readFileSync(
+    fileURLToPath(
+        new URL('../recipes/_shared/windows/Install.ps1', import.meta.url)
+    ),
+    'utf8'
+)
 const startSeal = readFileSync(
     fileURLToPath(
         new URL('../recipes/_shared/windows/Start-Seal.sh', import.meta.url)
@@ -215,6 +221,17 @@ describe('Finalize.ps1 ordering invariants', () => {
             'QEMU-GA service is not running after post-update repair'
         )
         expect(finalize).toContain('\\\\.\\Global\\org.qemu.guest_agent.0')
+    })
+
+    test('skips transient filesystem drives without roots when finding repair media', () => {
+        for (const script of [install, finalize]) {
+            expect(script).toContain(
+                'if ([string]::IsNullOrWhiteSpace($drive.Root)) { continue }'
+            )
+            expect(
+                script.indexOf('IsNullOrWhiteSpace($drive.Root)')
+            ).toBeLessThan(script.indexOf('Join-Path $drive.Root $FileName'))
+        }
     })
 
     test('does not make packer cleanup wait for an env-vars file it never uploads', () => {

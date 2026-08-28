@@ -9,6 +9,11 @@ if (-not $Seal) {
 
 function Find-FileOnMedia($FileName) {
   foreach ($drive in Get-PSDrive -PSProvider FileSystem) {
+    # A post-checkpoint-update session can expose transient FileSystem
+    # PSDrives without a Root. Join-Path treats a null Root as a terminating
+    # error, which used to stop the QEMU-GA repair before it reached the
+    # attached VirtIO media.
+    if ([string]::IsNullOrWhiteSpace($drive.Root)) { continue }
     $candidate = Join-Path $drive.Root $FileName
     if (Test-Path $candidate) { return $candidate }
   }
