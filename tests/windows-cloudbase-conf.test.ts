@@ -205,6 +205,8 @@ describe('Finalize.ps1 ordering invariants', () => {
         )
 
         expect(ensureAt).toBeGreaterThan(-1)
+        expect(finalize).toContain('function Test-QemuGuestAgentReady')
+        expect(finalize).not.toContain('$ready = {')
         expect(callAt).toBeGreaterThan(ensureAt)
         expect(callAt).toBeLessThan(registerAt)
         expect(finalize).toContain(
@@ -230,11 +232,12 @@ describe('Finalize.ps1 ordering invariants', () => {
     test('skips transient filesystem drives without roots when finding repair media', () => {
         for (const script of [install, finalize]) {
             expect(script).toContain(
-                'if ([string]::IsNullOrWhiteSpace($drive.Root)) { continue }'
+                'if ([string]::IsNullOrWhiteSpace($root)) { continue }'
             )
-            expect(
-                script.indexOf('IsNullOrWhiteSpace($drive.Root)')
-            ).toBeLessThan(script.indexOf('Join-Path $drive.Root $FileName'))
+            expect(script.indexOf('IsNullOrWhiteSpace($root)')).toBeLessThan(
+                script.indexOf('[IO.Path]::Combine($root, $FileName)')
+            )
+            expect(script).toContain('[IO.File]::Exists($candidate)')
         }
     })
 

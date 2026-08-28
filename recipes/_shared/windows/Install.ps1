@@ -5,9 +5,10 @@ function Write-Step($Message) { Write-Host "==> $Message" }
 
 function Find-FileOnMedia($FileName) {
   foreach ($drive in Get-PSDrive -PSProvider FileSystem) {
-    if ([string]::IsNullOrWhiteSpace($drive.Root)) { continue }
-    $candidate = Join-Path $drive.Root $FileName
-    if (Test-Path $candidate) { return $candidate }
+    $root = [string]$drive.Root
+    if ([string]::IsNullOrWhiteSpace($root)) { continue }
+    $candidate = [IO.Path]::Combine($root, $FileName)
+    if ([IO.File]::Exists($candidate)) { return $candidate }
   }
   return $null
 }

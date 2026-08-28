@@ -10,14 +10,22 @@ if (-not $Seal) {
 function Find-FileOnMedia($FileName) {
   foreach ($drive in Get-PSDrive -PSProvider FileSystem) {
     # A post-checkpoint-update session can expose transient FileSystem
-    # PSDrives without a Root. Join-Path treats a null Root as a terminating
-    # error, which used to stop the QEMU-GA repair before it reached the
-    # attached VirtIO media.
-    if ([string]::IsNullOrWhiteSpace($drive.Root)) { continue }
-    $candidate = Join-Path $drive.Root $FileName
-    if (Test-Path $candidate) { return $candidate }
+    # PSDrives without a Root. Avoid parameter binding for this lookup entirely:
+    # both Join-Path and Test-Path turn a transient null into a terminating error.
+    $root = [string]$drive.Root
+    if ([string]::IsNullOrWhiteSpace($root)) { continue }
+    $candidate = [IO.Path]::Combine($root, $FileName)
+    if ([IO.File]::Exists($candidate)) { return $candidate }
   }
   return $null
+}
+
+function Test-QemuGuestAgentReady {
+  $candidate = Get-Service -Name "QEMU-GA" -ErrorAction SilentlyContinue
+  if (-not $candidate -or $candidate.Status -ne "Running") { return $false }
+  # Keep the device path literal. Windows PowerShell 5.1 did not reliably retain
+  # the parent function's local variable in the invoked readiness scriptblock.
+  return Test-Path -LiteralPath "\\.\Global\org.qemu.guest_agent.0"
 }
 
 function Ensure-QemuGuestAgent {
@@ -28,16 +36,10 @@ function Ensure-QemuGuestAgent {
   # even though WinRM and the desktop have returned. The host-side seal handoff
   # depends on qm guest exec, so prove the service and channel again here, after
   # every destructive update and immediately before returning preparation.
-  $channel = "\\.\Global\org.qemu.guest_agent.0"
-  $ready = {
-    $candidate = Get-Service -Name "QEMU-GA" -ErrorAction SilentlyContinue
-    return $candidate -and $candidate.Status -eq "Running" -and (Test-Path $channel)
-  }
-
   $svc = Get-Service -Name "QEMU-GA" -ErrorAction SilentlyContinue
   if ($svc) {
     Set-Service -Name "QEMU-GA" -StartupType Automatic
-    if (& $ready) {
+    if (Test-QemuGuestAgentReady) {
       Write-Step "  QEMU-GA already running with virtio-serial channel open"
       return
     }
@@ -51,9 +53,9 @@ function Ensure-QemuGuestAgent {
   }
 
   $quickDeadline = [DateTime]::Now.AddSeconds(30)
-  while (-not (& $ready) -and [DateTime]::Now -lt $quickDeadline) { Start-Sleep 3 }
+  while (-not (Test-QemuGuestAgentReady) -and [DateTime]::Now -lt $quickDeadline) { Start-Sleep 3 }
 
-  if (-not (& $ready)) {
+  if (-not (Test-QemuGuestAgentReady)) {
     $virtioInstaller = Find-FileOnMedia "virtio-win-guest-tools.exe"
     if (-not $virtioInstaller) {
       throw "virtio-win-guest-tools.exe not found for post-update QEMU-GA repair"
@@ -73,7 +75,7 @@ function Ensure-QemuGuestAgent {
           Start-Service -Name "QEMU-GA" -ErrorAction SilentlyContinue
         }
       }
-      if (& $ready) { break }
+      if (Test-QemuGuestAgentReady) { break }
       Start-Sleep 5
     }
   }
@@ -83,7 +85,7 @@ function Ensure-QemuGuestAgent {
   if ($svc.Status -ne "Running") {
     throw "QEMU-GA service is not running after post-update repair (status: $($svc.Status))"
   }
-  if (-not (Test-Path $channel)) {
+  if (-not (Test-Path -LiteralPath "\\.\Global\org.qemu.guest_agent.0")) {
     throw "virtio-serial channel not present after post-update QEMU-GA repair"
   }
   Write-Step "  QEMU-GA running with virtio-serial channel open"
@@ -929,7 +931,13 @@ Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection
 # lowering it to 3 would weaken the shipped template's security posture without
 # meaningfully improving privacy -- AllowTelemetry above is the correct lever.
 
-Ensure-QemuGuestAgent
+try {
+  Ensure-QemuGuestAgent
+} catch {
+  $line = $_.InvocationInfo.ScriptLineNumber
+  $source = $_.InvocationInfo.Line.Trim()
+  throw "QEMU-GA repair failed at Finalize.ps1 line ${line} (${source}): $($_.Exception.Message)"
+}
 
 Write-Step "register deferred seal task"
 # Sysprep itself resets enough of WinRM that packer 1.16 receives HTTP 401 before
