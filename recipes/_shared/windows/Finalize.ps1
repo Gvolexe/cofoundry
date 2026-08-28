@@ -15,6 +15,73 @@ function Find-FileOnMedia($FileName) {
   return $null
 }
 
+function Ensure-QemuGuestAgent {
+  Write-Step "repair and verify QEMU Guest Agent after Windows Update"
+
+  # Server 2025 checkpoint cumulative updates can redeploy the OS layer. The
+  # pre-update VirtIO install may therefore leave QEMU-GA missing or stopped
+  # even though WinRM and the desktop have returned. The host-side seal handoff
+  # depends on qm guest exec, so prove the service and channel again here, after
+  # every destructive update and immediately before returning preparation.
+  $channel = "\\.\Global\org.qemu.guest_agent.0"
+  $ready = {
+    $candidate = Get-Service -Name "QEMU-GA" -ErrorAction SilentlyContinue
+    return $candidate -and $candidate.Status -eq "Running" -and (Test-Path $channel)
+  }
+
+  $svc = Get-Service -Name "QEMU-GA" -ErrorAction SilentlyContinue
+  if ($svc) {
+    Set-Service -Name "QEMU-GA" -StartupType Automatic
+    try {
+      if ($svc.Status -eq "Running") {
+        Restart-Service -Name "QEMU-GA" -Force -ErrorAction Stop
+      } else {
+        Start-Service -Name "QEMU-GA" -ErrorAction Stop
+      }
+    } catch {
+      Write-Step "  existing QEMU-GA could not be restarted; repairing VirtIO tools"
+    }
+  }
+
+  $quickDeadline = [DateTime]::Now.AddSeconds(30)
+  while (-not (& $ready) -and [DateTime]::Now -lt $quickDeadline) { Start-Sleep 3 }
+
+  if (-not (& $ready)) {
+    $virtioInstaller = Find-FileOnMedia "virtio-win-guest-tools.exe"
+    if (-not $virtioInstaller) {
+      throw "virtio-win-guest-tools.exe not found for post-update QEMU-GA repair"
+    }
+    $repair = Start-Process -FilePath $virtioInstaller `
+      -ArgumentList "/quiet", "/norestart" -Wait -PassThru
+    if ($repair.ExitCode -ne 0 -and $repair.ExitCode -ne 3010) {
+      throw "VirtIO post-update repair exited $($repair.ExitCode)"
+    }
+
+    $repairDeadline = [DateTime]::Now.AddMinutes(2)
+    while ([DateTime]::Now -lt $repairDeadline) {
+      $svc = Get-Service -Name "QEMU-GA" -ErrorAction SilentlyContinue
+      if ($svc) {
+        Set-Service -Name "QEMU-GA" -StartupType Automatic
+        if ($svc.Status -ne "Running") {
+          Start-Service -Name "QEMU-GA" -ErrorAction SilentlyContinue
+        }
+      }
+      if (& $ready) { break }
+      Start-Sleep 5
+    }
+  }
+
+  $svc = Get-Service -Name "QEMU-GA" -ErrorAction SilentlyContinue
+  if (-not $svc) { throw "QEMU-GA service not found after post-update repair" }
+  if ($svc.Status -ne "Running") {
+    throw "QEMU-GA service is not running after post-update repair (status: $($svc.Status))"
+  }
+  if (-not (Test-Path $channel)) {
+    throw "virtio-serial channel not present after post-update QEMU-GA repair"
+  }
+  Write-Step "  QEMU-GA running with virtio-serial channel open"
+}
+
 function ConvertTo-Bytes($Size) {
   # "32G" / "32768M" / "33285996544" -> bytes. G/M/K are 1024-based (GiB/MiB/KiB),
   # matching Proxmox/qemu-img's interpretation of the same suffix on the host.
@@ -854,6 +921,8 @@ Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection
 # It gates Defender, SmartScreen, and automatic updates rather than telemetry, so
 # lowering it to 3 would weaken the shipped template's security posture without
 # meaningfully improving privacy -- AllowTelemetry above is the correct lever.
+
+Ensure-QemuGuestAgent
 
 Write-Step "register deferred seal task"
 # Sysprep itself resets enough of WinRM that packer 1.16 receives HTTP 401 before

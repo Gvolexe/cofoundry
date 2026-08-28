@@ -154,8 +154,12 @@ describe('Finalize.ps1 ordering invariants', () => {
 
     test('defers sysprep and WinRM teardown until preparation has returned', () => {
         expect(finalize).toContain('param([switch]$Seal)')
-        expect(finalize).toContain("Test-Path -LiteralPath 'C:\\Windows\\Setup\\cf-seal.ps1'")
-        expect(finalize).toContain("[IO.File]::ReadAllText('C:\\Windows\\Setup\\cf-seal.ps1')")
+        expect(finalize).toContain(
+            "Test-Path -LiteralPath 'C:\\Windows\\Setup\\cf-seal.ps1'"
+        )
+        expect(finalize).toContain(
+            "[IO.File]::ReadAllText('C:\\Windows\\Setup\\cf-seal.ps1')"
+        )
         expect(finalize).not.toContain('Copy-Item $sealSource')
         expect(finalize).toContain('PackerFinalizeSeal')
         expect(finalize).toContain('Register-ScheduledTask')
@@ -183,6 +187,36 @@ describe('Finalize.ps1 ordering invariants', () => {
         }
     })
 
+    test('repairs QEMU-GA after checkpoint updates before handing off the seal', () => {
+        // Server 2025 checkpoint cumulative updates can redeploy the OS layer.
+        // The 2026-08-28 build entered Finalize with WinRM healthy, registered
+        // PackerFinalizeSeal, then Start-Seal failed because the QEMU agent that
+        // Install.ps1 had verified before Windows Update was no longer running.
+        const ensureAt = finalize.indexOf('function Ensure-QemuGuestAgent')
+        const callAt = finalize.indexOf('Ensure-QemuGuestAgent\n')
+        const registerAt = finalize.indexOf(
+            'Write-Step "register deferred seal task"'
+        )
+
+        expect(ensureAt).toBeGreaterThan(-1)
+        expect(callAt).toBeGreaterThan(ensureAt)
+        expect(callAt).toBeLessThan(registerAt)
+        expect(finalize).toContain(
+            'Set-Service -Name "QEMU-GA" -StartupType Automatic'
+        )
+        expect(finalize).toContain('Start-Service -Name "QEMU-GA"')
+        expect(finalize).toContain(
+            'Find-FileOnMedia "virtio-win-guest-tools.exe"'
+        )
+        expect(finalize).toContain(
+            'QEMU-GA service not found after post-update repair'
+        )
+        expect(finalize).toContain(
+            'QEMU-GA service is not running after post-update repair'
+        )
+        expect(finalize).toContain('\\\\.\\Global\\org.qemu.guest_agent.0')
+    })
+
     test('does not make packer cleanup wait for an env-vars file it never uploads', () => {
         // Packer runs its generated `packer-cleanup-*` script through the same
         // execute_command as a normal provisioner, but that cleanup invocation
@@ -193,9 +227,7 @@ describe('Finalize.ps1 ordering invariants', () => {
                 "$_isCleanup=[IO.Path]::GetFileName($_p) -like 'packer-cleanup-*'"
             )
             expect(recipe).toContain('$_needsVars=-not $_isCleanup')
-            expect(recipe).toContain(
-                '($_needsVars -and -not (Test-Path $_v))'
-            )
+            expect(recipe).toContain('($_needsVars -and -not (Test-Path $_v))')
             expect(recipe).toContain(
                 'if ($_needsVars -and -not (Test-Path $_v))'
             )
