@@ -506,13 +506,18 @@ Get-Process -Name msedge, msedgewebview2, MicrosoftEdgeUpdate -ErrorAction Silen
 $blockers = @()
 try {
   foreach ($pkg in Get-AppxPackage -AllUsers -ErrorAction Stop) {
-    # An exact registered+provisioned version is the state sysprep requires, so
-    # preserve it. Removing those exact versions deprovisioned Edge, Windows
-    # Terminal, and Feedback Hub on Server 2025; the resulting clone crash-looped
-    # Explorer/ShellHost and painted a uniformly blank console. A WU-installed
-    # newer per-user version still has a different PackageFullName and therefore
-    # continues through the removal path below.
-    if ($provisioned -contains $pkg.PackageFullName) { continue }
+    # Preserve either the exact provisioned package or a provisioned bundle for
+    # the same family. Windows Terminal and Feedback Hub are provisioned as
+    # neutral bundles (neutral_~) but registered as architecture-specific child
+    # packages, so raw PackageFullName equality alone incorrectly removed them.
+    # Edge is provisioned as a non-bundle exact package. A genuinely newer
+    # per-user non-bundle version matches neither condition and still continues
+    # through removal so it cannot block sysprep.
+    $provisioningMatches = @($provisionedPkgs | Where-Object {
+      $_.DisplayName -eq $pkg.Name -and
+      ($_.PackageName -eq $pkg.PackageFullName -or $_.PackageName -match '_neutral_~_')
+    })
+    if ($provisioningMatches.Count) { continue }
 
     # Framework packages (VCLibs, .NET Native, …) cannot be removed while any
     # dependent package remains -- Windows answers "cannot remove framework".

@@ -1628,9 +1628,12 @@ The main removal loop still unregistered exact registered+provisioned versions,
 so a Server 2025 build dropped Edge, Windows Terminal, and Feedback Hub from
 provisioning. Its disposable clone passed RDP, password, IPv4, agent, hostname,
 disk, and service checks, but Explorer/ShellHost crash-looped and the console was
-100% `#141414`. Exact registered+provisioned versions are now skipped before
-`Remove-AppxPackage`; only a mismatched per-user version installed by Windows
-Update continues through cleanup.
+100% `#141414`. Exact registered+provisioned versions and architecture-specific
+children of a same-family provisioned neutral bundle are now skipped before
+`Remove-AppxPackage`; only a mismatched per-user non-bundle version installed by
+Windows Update continues through cleanup. The bundle distinction matters:
+Terminal registers as `..._x64__...` but is provisioned as `..._neutral_~_...`,
+so raw full-name equality cannot identify its safe state.
 
 **Do not read the blocker-count warning as a severity signal.** That image
 listed 41 registered, non-provisioned packages and generalize objected to
