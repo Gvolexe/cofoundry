@@ -357,6 +357,22 @@ describe('Appx cleanup does not manufacture generalize blockers', () => {
         // precisely the state sysprep refuses.
         expect(cleanup()).toMatch(/\$_\.PackageName -ne \$pkg\.PackageFullName/)
     })
+
+    test('preserves an exact registered and provisioned package version', () => {
+        const body = cleanup()
+        const exactVersionGuard = body.indexOf(
+            'if ($provisioned -contains $pkg.PackageFullName) { continue }'
+        )
+        const remove = body.indexOf(
+            'Remove-AppxPackage -Package $pkg.PackageFullName -AllUsers'
+        )
+
+        expect(exactVersionGuard).toBeGreaterThan(-1)
+        expect(exactVersionGuard).toBeLessThan(remove)
+        expect(body).not.toContain(
+            '($provisioned -contains $pkg.PackageFullName) -and $registered.Count -eq 0'
+        )
+    })
 })
 
 /**

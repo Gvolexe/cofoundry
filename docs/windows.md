@@ -1623,6 +1623,15 @@ before packer could delete it:
 Fixes: skip `$pkg.NonRemovable`, and never deprovision an entry whose
 `PackageName` equals the registered `PackageFullName`.
 
+**2026-08-30 clone regression:** merely avoiding the fallback was not enough.
+The main removal loop still unregistered exact registered+provisioned versions,
+so a Server 2025 build dropped Edge, Windows Terminal, and Feedback Hub from
+provisioning. Its disposable clone passed RDP, password, IPv4, agent, hostname,
+disk, and service checks, but Explorer/ShellHost crash-looped and the console was
+100% `#141414`. Exact registered+provisioned versions are now skipped before
+`Remove-AppxPackage`; only a mismatched per-user version installed by Windows
+Update continues through cleanup.
+
 **Do not read the blocker-count warning as a severity signal.** That image
 listed 41 registered, non-provisioned packages and generalize objected to
 exactly one. The other 40 are non-removable inbox SystemApps (`SignatureKind`

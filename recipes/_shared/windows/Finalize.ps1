@@ -506,20 +506,13 @@ Get-Process -Name msedge, msedgewebview2, MicrosoftEdgeUpdate -ErrorAction Silen
 $blockers = @()
 try {
   foreach ($pkg in Get-AppxPackage -AllUsers -ErrorAction Stop) {
-    # Being provisioned is NOT sufficient to skip. That was the 2026-08-01 13:26Z
-    # failure: Edge appears in $provisioned under the exact full name sysprep then
-    # rejected, so it was skipped and never unregistered. Provisioning covers a
-    # package *version*; a WU round installs a newer Edge for the current user, and
-    # it is that per-user registration generalize refuses. Only skip when nothing
-    # is actually registered to a user -- a purely staged package is harmless.
-    $registered = @()
-    try {
-      $registered = @($pkg.PackageUserInformation |
-        Where-Object { $_.InstallState -eq "Installed" })
-    } catch {
-      # Cannot tell -- fall through and attempt removal rather than assume safe.
-    }
-    if (($provisioned -contains $pkg.PackageFullName) -and $registered.Count -eq 0) { continue }
+    # An exact registered+provisioned version is the state sysprep requires, so
+    # preserve it. Removing those exact versions deprovisioned Edge, Windows
+    # Terminal, and Feedback Hub on Server 2025; the resulting clone crash-looped
+    # Explorer/ShellHost and painted a uniformly blank console. A WU-installed
+    # newer per-user version still has a different PackageFullName and therefore
+    # continues through the removal path below.
+    if ($provisioned -contains $pkg.PackageFullName) { continue }
 
     # Framework packages (VCLibs, .NET Native, …) cannot be removed while any
     # dependent package remains -- Windows answers "cannot remove framework".
