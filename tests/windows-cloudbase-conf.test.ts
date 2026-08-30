@@ -193,6 +193,14 @@ describe('Finalize.ps1 ordering invariants', () => {
         }
     })
 
+    test('reports the failing PowerShell line for every recipe', () => {
+        for (const recipe of windowsRecipes) {
+            expect(recipe).toContain('InvocationInfo.ScriptLineNumber')
+            expect(recipe).toContain('InvocationInfo.Line')
+            expect(recipe).toContain('PROVISIONER ERROR at line ')
+        }
+    })
+
     test('repairs QEMU-GA after checkpoint updates before handing off the seal', () => {
         // Server 2025 checkpoint cumulative updates can redeploy the OS layer.
         // The 2026-08-28 build entered Finalize with WinRM healthy, registered
@@ -278,6 +286,19 @@ describe('Finalize.ps1 ordering invariants', () => {
         expect(callAt).toBeGreaterThan(loopAt)
         expect(callAt).toBeLessThan(gateThrowAt)
         expect(finalize).toContain('Sysprep\\Panther\\setuperr.log')
+    })
+})
+
+describe('Shrink-SystemPartition avoids the Server 2025 size-query failure', () => {
+    test('lets Resize-Partition enforce the supported minimum', () => {
+        const start = finalize.indexOf('function Shrink-SystemPartition')
+        const end = finalize.indexOf('\n# Overwrite free space', start)
+        const fn = finalize.slice(start, end)
+
+        expect(start).toBeGreaterThan(-1)
+        expect(fn).toContain('Resize-Partition -DriveLetter C -Size $targetBytes')
+        expect(fn).not.toMatch(/^\s*\$supported\s*=\s*Get-PartitionSupportedSize/m)
+        expect(fn).toContain('could not shrink C:')
     })
 })
 

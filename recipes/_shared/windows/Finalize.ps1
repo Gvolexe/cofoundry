@@ -113,20 +113,26 @@ function Shrink-SystemPartition($FinalSize) {
   $marginBytes = 1GB
   $finalBytes  = ConvertTo-Bytes $FinalSize
   $targetBytes = $finalBytes - $marginBytes
-
-  $supported = Get-PartitionSupportedSize -DriveLetter C
-  if ($supported.SizeMin -gt $targetBytes) {
-    throw ("C: needs at least {0:N0} bytes but final disk {1} (minus 1G margin) is only {2:N0} bytes -- raise final_disk_size." -f $supported.SizeMin, $FinalSize, $targetBytes)
-  }
   # Round down to a MiB boundary so the partition end is cleanly below the disk end.
   $targetBytes = [long]([math]::Floor($targetBytes / 1MB) * 1MB)
 
-  $current = (Get-Partition -DriveLetter C).Size
+  $partition = Get-Partition -DriveLetter C
+  if (-not $partition) { throw "C: partition was not found" }
+  $current = $partition.Size
   if ($current -le $targetBytes) {
     Write-Step ("C: already {0:N0} bytes (<= target {1:N0}); no shrink needed" -f $current, $targetBytes)
     return
   }
-  Resize-Partition -DriveLetter C -Size $targetBytes
+  # Do not preflight with Get-PartitionSupportedSize here. Server 2025's
+  # in-box Storage module threw a ParameterBindingValidationException for its
+  # internal null Path after the checkpoint cumulative update, despite C:
+  # being healthy. Resize-Partition performs the same supported-minimum check
+  # itself and refuses an unsafe target without changing the partition.
+  try {
+    Resize-Partition -DriveLetter C -Size $targetBytes
+  } catch {
+    throw ("could not shrink C: to {0:N0} bytes for final disk {1}: {2}" -f $targetBytes, $FinalSize, $_.Exception.Message)
+  }
   $after = (Get-Partition -DriveLetter C).Size
   Write-Step ("C: shrunk {0:N0} -> {1:N0} bytes (final disk {2})" -f $current, $after, $FinalSize)
 }
