@@ -214,7 +214,7 @@ describe('Finalize.ps1 ordering invariants', () => {
         )
         expect(finalize).toContain('Start-Service -Name "QEMU-GA"')
         expect(finalize).toContain(
-            'QEMU-GA already running with virtio-serial channel open'
+            'QEMU-GA already running; host handoff will verify the channel'
         )
         expect(finalize).not.toContain('Restart-Service -Name "QEMU-GA" -Force')
         expect(finalize).toContain(
@@ -226,7 +226,10 @@ describe('Finalize.ps1 ordering invariants', () => {
         expect(finalize).toContain(
             'QEMU-GA service is not running after post-update repair'
         )
-        expect(finalize).toContain('\\\\.\\Global\\org.qemu.guest_agent.0')
+        expect(finalize).not.toContain(
+            'Test-Path -LiteralPath "\\\\.\\Global\\org.qemu.guest_agent.0"'
+        )
+        expect(startSeal).toContain('qm guest exec "$CF_BUILT_VMID"')
     })
 
     test('skips transient filesystem drives without roots when finding repair media', () => {

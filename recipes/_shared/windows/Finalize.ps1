@@ -22,10 +22,7 @@ function Find-FileOnMedia($FileName) {
 
 function Test-QemuGuestAgentReady {
   $candidate = Get-Service -Name "QEMU-GA" -ErrorAction SilentlyContinue
-  if (-not $candidate -or $candidate.Status -ne "Running") { return $false }
-  # Keep the device path literal. Windows PowerShell 5.1 did not reliably retain
-  # the parent function's local variable in the invoked readiness scriptblock.
-  return Test-Path -LiteralPath "\\.\Global\org.qemu.guest_agent.0"
+  return [bool]$candidate -and $candidate.Status -eq "Running"
 }
 
 function Ensure-QemuGuestAgent {
@@ -34,13 +31,17 @@ function Ensure-QemuGuestAgent {
   # Server 2025 checkpoint cumulative updates can redeploy the OS layer. The
   # pre-update VirtIO install may therefore leave QEMU-GA missing or stopped
   # even though WinRM and the desktop have returned. The host-side seal handoff
-  # depends on qm guest exec, so prove the service and channel again here, after
-  # every destructive update and immediately before returning preparation.
+  # depends on qm guest exec, so restore the service here after every destructive
+  # update. Do not probe the virtio-serial device with Test-Path in this late
+  # session: after a Server 2025 checkpoint update Windows PowerShell can expose
+  # a transient null filesystem path and terminate parameter binding. The very
+  # next host-side Start-Seal.sh step invokes `qm guest exec`, which is the
+  # authoritative end-to-end proof that the service and channel both work.
   $svc = Get-Service -Name "QEMU-GA" -ErrorAction SilentlyContinue
   if ($svc) {
     Set-Service -Name "QEMU-GA" -StartupType Automatic
     if (Test-QemuGuestAgentReady) {
-      Write-Step "  QEMU-GA already running with virtio-serial channel open"
+      Write-Step "  QEMU-GA already running; host handoff will verify the channel"
       return
     }
     if ($svc.Status -ne "Running") {
@@ -85,10 +86,7 @@ function Ensure-QemuGuestAgent {
   if ($svc.Status -ne "Running") {
     throw "QEMU-GA service is not running after post-update repair (status: $($svc.Status))"
   }
-  if (-not (Test-Path -LiteralPath "\\.\Global\org.qemu.guest_agent.0")) {
-    throw "virtio-serial channel not present after post-update QEMU-GA repair"
-  }
-  Write-Step "  QEMU-GA running with virtio-serial channel open"
+  Write-Step "  QEMU-GA running; host handoff will verify the channel"
 }
 
 function ConvertTo-Bytes($Size) {
@@ -935,7 +933,12 @@ try {
   Ensure-QemuGuestAgent
 } catch {
   $line = $_.InvocationInfo.ScriptLineNumber
-  $source = $_.InvocationInfo.Line.Trim()
+  $source = [string]$_.InvocationInfo.Line
+  if ([string]::IsNullOrWhiteSpace($source)) {
+    $source = '<unknown>'
+  } else {
+    $source = $source.Trim()
+  }
   throw "QEMU-GA repair failed at Finalize.ps1 line ${line} (${source}): $($_.Exception.Message)"
 }
 
