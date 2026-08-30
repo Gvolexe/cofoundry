@@ -17,16 +17,15 @@ while [ "$(date +%s)" -lt "$agent_deadline" ]; do
     exit 0
   fi
 
-  if qm guest ping "$CF_BUILT_VMID" >/dev/null 2>&1; then
-    # Idempotent across a lost guest-agent reply: never start a task that is
-    # already running. The host-side offline sentinel gate proves completion.
-    if agent_output=$(qm guest exec "$CF_BUILT_VMID" -- powershell.exe -NoLogo -NoProfile -NonInteractive \
-      -Command "\$task = Get-ScheduledTask -TaskName 'PackerFinalizeSeal'; if (\$task.State -eq 'Ready') { Start-ScheduledTask -TaskName 'PackerFinalizeSeal' }" 2>&1); then
-      seal_started=1
-      break
-    fi
-    last_agent_error=$agent_output
+  # Proxmox 9 has no `qm guest ping` command. Retry the supported guest-exec
+  # operation directly, and bound each transport attempt so the outer five-
+  # minute deadline remains real even if an agent socket wedges.
+  if agent_output=$(timeout 15 qm guest exec "$CF_BUILT_VMID" -- powershell.exe -NoLogo -NoProfile -NonInteractive \
+    -Command "\$task = Get-ScheduledTask -TaskName 'PackerFinalizeSeal'; if (\$task.State -eq 'Ready') { Start-ScheduledTask -TaskName 'PackerFinalizeSeal' }" 2>&1); then
+    seal_started=1
+    break
   fi
+  last_agent_error=$agent_output
   sleep 5
 done
 

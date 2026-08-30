@@ -195,7 +195,10 @@ describe('Finalize.ps1 ordering invariants', () => {
 
     test('retries the guest-agent seal handoff without starting the task twice', () => {
         expect(startSeal).toContain('agent_deadline=$(( $(date +%s) + 300 ))')
-        expect(startSeal).toContain('qm guest ping "$CF_BUILT_VMID"')
+        expect(startSeal).not.toMatch(/^\s*if\s+qm guest ping/m)
+        expect(startSeal).toContain(
+            'timeout 15 qm guest exec "$CF_BUILT_VMID"'
+        )
         expect(startSeal).toContain("if (\\$task.State -eq 'Ready')")
         expect(startSeal).toContain('within 5m')
         expect(startSeal).toContain('deferring to offline seal gate')
@@ -236,9 +239,14 @@ describe('Finalize.ps1 ordering invariants', () => {
         )
         expect(finalize).toContain('Start-Service -Name "QEMU-GA"')
         expect(finalize).toContain(
-            'QEMU-GA already running; host handoff will verify the channel'
+            'QEMU-GA already running with virtio-serial channel open'
         )
-        expect(finalize).not.toContain('Restart-Service -Name "QEMU-GA" -Force')
+        expect(finalize).toContain(
+            'Test-Path -LiteralPath "\\\\.\\Global\\org.qemu.guest_agent.0"'
+        )
+        expect(finalize).toContain(
+            'Stop-Service -Name "QEMU-GA" -Force'
+        )
         expect(finalize).toContain(
             'Find-FileOnMedia "virtio-win-guest-tools.exe"'
         )
@@ -246,10 +254,7 @@ describe('Finalize.ps1 ordering invariants', () => {
             'QEMU-GA service not found after post-update repair'
         )
         expect(finalize).toContain(
-            'QEMU-GA service is not running after post-update repair'
-        )
-        expect(finalize).not.toContain(
-            'Test-Path -LiteralPath "\\\\.\\Global\\org.qemu.guest_agent.0"'
+            'QEMU-GA service/channel is not ready after post-update repair'
         )
         expect(startSeal).toContain('qm guest exec "$CF_BUILT_VMID"')
     })
@@ -379,7 +384,8 @@ describe('Zero-FreeSpace leaves the volume usable', () => {
         const runAt = finalize.indexOf('Sysprep.exe')
         expect(runAt).toBeGreaterThan(sysprepAt)
         const preamble = finalize.slice(sysprepAt, runAt)
-        expect(preamble).toMatch(/Get-PSDrive C/)
+        expect(preamble).toContain('Win32_LogicalDisk')
+        expect(preamble).toContain('$freeBytes -ge 4GB')
         expect(preamble).toMatch(/throw \(?"?only \{0:N1\} GB free/)
     })
 })

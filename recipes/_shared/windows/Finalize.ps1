@@ -22,7 +22,11 @@ function Find-FileOnMedia($FileName) {
 
 function Test-QemuGuestAgentReady {
   $candidate = Get-Service -Name "QEMU-GA" -ErrorAction SilentlyContinue
-  return [bool]$candidate -and $candidate.Status -eq "Running"
+  if (-not $candidate -or $candidate.Status -ne "Running") { return $false }
+  # The previous generic null-Path failure was later traced to
+  # Get-PartitionSupportedSize, not this literal device probe. A Running
+  # service without this channel is not usable by the host.
+  return Test-Path -LiteralPath "\\.\Global\org.qemu.guest_agent.0"
 }
 
 function Ensure-QemuGuestAgent {
@@ -31,17 +35,13 @@ function Ensure-QemuGuestAgent {
   # Server 2025 checkpoint cumulative updates can redeploy the OS layer. The
   # pre-update VirtIO install may therefore leave QEMU-GA missing or stopped
   # even though WinRM and the desktop have returned. The host-side seal handoff
-  # depends on qm guest exec, so restore the service here after every destructive
-  # update. Do not probe the virtio-serial device with Test-Path in this late
-  # session: after a Server 2025 checkpoint update Windows PowerShell can expose
-  # a transient null filesystem path and terminate parameter binding. The very
-  # next host-side Start-Seal.sh step invokes `qm guest exec`, which is the
-  # authoritative end-to-end proof that the service and channel both work.
+  # depends on qm guest exec, so restore both the service and its virtio-serial
+  # channel here after every destructive update.
   $svc = Get-Service -Name "QEMU-GA" -ErrorAction SilentlyContinue
   if ($svc) {
     Set-Service -Name "QEMU-GA" -StartupType Automatic
     if (Test-QemuGuestAgentReady) {
-      Write-Step "  QEMU-GA already running; host handoff will verify the channel"
+      Write-Step "  QEMU-GA already running with virtio-serial channel open"
       return
     }
     if ($svc.Status -ne "Running") {
@@ -67,6 +67,13 @@ function Ensure-QemuGuestAgent {
       throw "VirtIO post-update repair exited $($repair.ExitCode)"
     }
 
+    # The checkpoint update can leave qemu-ga.exe Running against a stale
+    # device handle. Restart only on this unhealthy-channel repair path; a
+    # healthy agent returns above and is never disrupted.
+    Stop-Service -Name "QEMU-GA" -Force -ErrorAction SilentlyContinue
+    Start-Sleep 2
+    Start-Service -Name "QEMU-GA" -ErrorAction SilentlyContinue
+
     $repairDeadline = [DateTime]::Now.AddMinutes(2)
     while ([DateTime]::Now -lt $repairDeadline) {
       $svc = Get-Service -Name "QEMU-GA" -ErrorAction SilentlyContinue
@@ -83,10 +90,10 @@ function Ensure-QemuGuestAgent {
 
   $svc = Get-Service -Name "QEMU-GA" -ErrorAction SilentlyContinue
   if (-not $svc) { throw "QEMU-GA service not found after post-update repair" }
-  if ($svc.Status -ne "Running") {
-    throw "QEMU-GA service is not running after post-update repair (status: $($svc.Status))"
+  if (-not (Test-QemuGuestAgentReady)) {
+    throw "QEMU-GA service/channel is not ready after post-update repair (service status: $($svc.Status))"
   }
-  Write-Step "  QEMU-GA running; host handoff will verify the channel"
+  Write-Step "  QEMU-GA running with virtio-serial channel open"
 }
 
 function ConvertTo-Bytes($Size) {
@@ -629,9 +636,15 @@ Write-Step "sysprep and shutdown"
 # surface as bare "There is not enough space on the disk" from whichever
 # statement happened to be first, naming neither the drive nor the cause. Check
 # it once, up front, and say what filled up.
-$freeGB = (Get-PSDrive C).Free / 1GB
+$reclaimDeadline = [DateTime]::Now.AddMinutes(2)
+do {
+  $freeBytes = [long](Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='C:'").FreeSpace
+  if ($freeBytes -ge 4GB) { break }
+  Start-Sleep 5
+} while ([DateTime]::Now -lt $reclaimDeadline)
+$freeGB = $freeBytes / 1GB
 Write-Step ("  C: has {0:N1} GB free before generalize" -f $freeGB)
-if ($freeGB -lt 0.75) {
+if ($freeGB -lt 4) {
   $hogs = Get-ChildItem C:\ -Force -Directory -ErrorAction SilentlyContinue |
     ForEach-Object {
       $b = (Get-ChildItem $_.FullName -Recurse -Force -File -ErrorAction SilentlyContinue |
@@ -639,7 +652,7 @@ if ($freeGB -lt 0.75) {
       [pscustomobject]@{ Path = $_.FullName; GB = [math]::Round($b / 1GB, 1) }
     } | Sort-Object GB -Descending | Select-Object -First 8
   foreach ($h in $hogs) { Write-Step ("    {0,6:N1} GB  {1}" -f $h.GB, $h.Path) }
-  throw ("only {0:N1} GB free on C: - sysprep needs room to generalize. Largest directories are listed above; if this is C:\Windows.old the reclaim step above failed, otherwise raise final_disk_size." -f $freeGB)
+  throw ("only {0:N1} GB free on C: after waiting 2m for NTFS reclaim - sysprep needs at least 4 GB. Largest directories are listed above; if this is C:\Windows.old the reclaim step above failed, otherwise raise final_disk_size." -f $freeGB)
 }
 
 # Pass cloudbase-init's bundled Unattend.xml so OOBE on the cloned VM auto-
