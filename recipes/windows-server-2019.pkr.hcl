@@ -128,6 +128,7 @@ source "proxmox-iso" "windows-server-2019" {
   cores    = 4
   sockets  = 1
   memory   = 8192
+  qemu_agent = true
 
   efi_config {
     efi_storage_pool  = var.proxmox_storage_pool

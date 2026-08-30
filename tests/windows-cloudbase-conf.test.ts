@@ -201,6 +201,12 @@ describe('Finalize.ps1 ordering invariants', () => {
         expect(startSeal).toContain('deferring to offline seal gate')
     })
 
+    test('enables the Proxmox guest-agent channel for every Windows build VM', () => {
+        for (const recipe of windowsRecipes) {
+            expect(recipe).toMatch(/^\s*qemu_agent\s*=\s*true\s*$/m)
+        }
+    })
+
     test('reports the failing PowerShell line for every recipe', () => {
         for (const recipe of windowsRecipes) {
             expect(recipe).toContain('InvocationInfo.ScriptLineNumber')
