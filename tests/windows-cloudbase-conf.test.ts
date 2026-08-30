@@ -239,11 +239,9 @@ describe('Finalize.ps1 ordering invariants', () => {
         )
         expect(finalize).toContain('Start-Service -Name "QEMU-GA"')
         expect(finalize).toContain(
-            'QEMU-GA already running with virtio-serial channel open'
+            'QEMU-GA service already running; host handoff will verify the channel'
         )
-        expect(finalize).toContain(
-            'Test-Path -LiteralPath "\\\\.\\Global\\org.qemu.guest_agent.0"'
-        )
+        expect(finalize).not.toContain('org.qemu.guest_agent.0')
         expect(finalize).toContain(
             'Stop-Service -Name "QEMU-GA" -Force'
         )
@@ -254,9 +252,21 @@ describe('Finalize.ps1 ordering invariants', () => {
             'QEMU-GA service not found after post-update repair'
         )
         expect(finalize).toContain(
-            'QEMU-GA service/channel is not ready after post-update repair'
+            'QEMU-GA service is not ready after post-update repair'
         )
         expect(startSeal).toContain('qm guest exec "$CF_BUILT_VMID"')
+    })
+
+    test('scopes the deferred-seal trap away from preparation failures', () => {
+        const preparationExit = finalize.indexOf('preparation complete; deferred seal task ready')
+        const sealFunction = finalize.indexOf('function Invoke-DeferredSeal')
+        const sealTrap = finalize.indexOf('trap {', sealFunction)
+
+        expect(preparationExit).toBeGreaterThan(-1)
+        expect(sealFunction).toBeGreaterThan(preparationExit)
+        expect(sealTrap).toBeGreaterThan(sealFunction)
+        expect(finalize).toContain('Set-Content -LiteralPath $sealErrorLog')
+        expect(finalize.trimEnd()).toEndWith('Invoke-DeferredSeal')
     })
 
     test('skips transient filesystem drives without roots when finding repair media', () => {

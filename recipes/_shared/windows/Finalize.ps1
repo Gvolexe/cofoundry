@@ -22,11 +22,7 @@ function Find-FileOnMedia($FileName) {
 
 function Test-QemuGuestAgentReady {
   $candidate = Get-Service -Name "QEMU-GA" -ErrorAction SilentlyContinue
-  if (-not $candidate -or $candidate.Status -ne "Running") { return $false }
-  # The previous generic null-Path failure was later traced to
-  # Get-PartitionSupportedSize, not this literal device probe. A Running
-  # service without this channel is not usable by the host.
-  return Test-Path -LiteralPath "\\.\Global\org.qemu.guest_agent.0"
+  return [bool]($candidate -and $candidate.Status -eq "Running")
 }
 
 function Ensure-QemuGuestAgent {
@@ -41,7 +37,12 @@ function Ensure-QemuGuestAgent {
   if ($svc) {
     Set-Service -Name "QEMU-GA" -StartupType Automatic
     if (Test-QemuGuestAgentReady) {
-      Write-Step "  QEMU-GA already running with virtio-serial channel open"
+      # Do not probe the virtio-serial device with Test-Path here. Windows
+      # PowerShell's FileSystem provider cannot reliably bind the special
+      # \\.\Global\ device path on Server 2025 and masked a healthy agent as a
+      # null-Path failure. Start-Seal.sh immediately performs the authoritative
+      # host-side qm guest exec check before any irreversible seal operation.
+      Write-Step "  QEMU-GA service already running; host handoff will verify the channel"
       return
     }
     if ($svc.Status -ne "Running") {
@@ -91,9 +92,9 @@ function Ensure-QemuGuestAgent {
   $svc = Get-Service -Name "QEMU-GA" -ErrorAction SilentlyContinue
   if (-not $svc) { throw "QEMU-GA service not found after post-update repair" }
   if (-not (Test-QemuGuestAgentReady)) {
-    throw "QEMU-GA service/channel is not ready after post-update repair (service status: $($svc.Status))"
+    throw "QEMU-GA service is not ready after post-update repair (service status: $($svc.Status))"
   }
-  Write-Step "  QEMU-GA running with virtio-serial channel open"
+  Write-Step "  QEMU-GA service running; host handoff will verify the channel"
 }
 
 function ConvertTo-Bytes($Size) {
@@ -994,14 +995,15 @@ exit 0
 # The final Packer provisioner starts this branch and immediately returns. Delay
 # long enough for that WinRM response to reach packer before sysprep resets the
 # communicator, then perform every irreversible seal operation in one SYSTEM task.
-Start-Sleep -Seconds 10
-$unattendCopy = "C:\Windows\Temp\cb-sysprep-unattend.xml"
-$sealErrorLog = "C:\Windows\Setup\cf-seal-error.log"
-trap {
-  ($_ | Out-String) | Set-Content -Path $sealErrorLog -Encoding UTF8
-  shutdown.exe /s /t 0 /f
-  exit 1
-}
+function Invoke-DeferredSeal {
+  Start-Sleep -Seconds 10
+  $unattendCopy = "C:\Windows\Temp\cb-sysprep-unattend.xml"
+  $sealErrorLog = "C:\Windows\Setup\cf-seal-error.log"
+  trap {
+    ($_ | Out-String) | Set-Content -LiteralPath $sealErrorLog -Encoding UTF8
+    shutdown.exe /s /t 0 /f
+    exit 1
+  }
 
 # Gate sysprep on a fully settled system (Server 2019 generalize reliability).
 #
@@ -1209,3 +1211,6 @@ Write-Step "generalize complete and armed; shutting down"
 shutdown.exe /s /t 0 /f
 Start-Sleep 180
 exit 0
+}
+
+Invoke-DeferredSeal
