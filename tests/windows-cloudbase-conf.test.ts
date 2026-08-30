@@ -193,6 +193,14 @@ describe('Finalize.ps1 ordering invariants', () => {
         }
     })
 
+    test('retries the guest-agent seal handoff without starting the task twice', () => {
+        expect(startSeal).toContain('agent_deadline=$(( $(date +%s) + 300 ))')
+        expect(startSeal).toContain('qm guest ping "$CF_BUILT_VMID"')
+        expect(startSeal).toContain("if (\\$task.State -eq 'Ready')")
+        expect(startSeal).toContain('within 5m')
+        expect(startSeal).toContain('deferring to offline seal gate')
+    })
+
     test('reports the failing PowerShell line for every recipe', () => {
         for (const recipe of windowsRecipes) {
             expect(recipe).toContain('InvocationInfo.ScriptLineNumber')
